@@ -1,0 +1,13 @@
+[project]
+name = "rgb-qr"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.14"
+dependencies = [
+    "numpy>=2.4.2",
+    "opencv-python>=4.13.0.92",
+    "pillow>=12.1.1",
+    "qrcode[pil]>=8.2",
+    "streamlit>=1.54.0",
+]
