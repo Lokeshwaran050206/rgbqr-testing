@@ -1,7 +1,4 @@
 [project]
-name = "rgb_qr"
-version = "0.1.0"
-description = "RGB layered QR generator and scanner"
 requires-python = ">=3.10,<3.12"
 
 dependencies = [
