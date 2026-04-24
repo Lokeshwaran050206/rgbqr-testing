@@ -1,146 +1,260 @@
+
 import streamlit as st
-from PIL import Image
-from rgb_qr_core import generate_rgb_qr, split_and_decode_rgb_qr
+import qrcode
+import zlib
 import base64
-from io import BytesIO
+import numpy as np
+from PIL import Image
+import cv2
+import io
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
 
-st.set_page_config(page_title="RGB_QR Web App", layout="centered")
+# ---------------- PAGE CONFIG ---------------- #
+st.set_page_config(page_title="RGB QR System", layout="centered")
 
-st.title("🌈 RGB_QR Web Application")
+# ---------------- SESSION STATE ---------------- #
+if "mode" not in st.session_state:
+    st.session_state.mode = "Encode"
 
-option = st.radio("Choose Option:", ["Create QR", "Scan QR"])
+# ---------------- SIDEBAR ---------------- #
+st.sidebar.title("Dashboard")
 
+st.sidebar.info("""
+Features:
+- AES Encryption
+- Compression (zlib)
+- RGB QR Encoding
+- Camera Scan
+""")
 
-# =====================================================
-# CREATE QR MODE
-# =====================================================
+st.sidebar.markdown("---")
 
-if option == "Create QR":
+# ---------------- FIXED AES KEY ---------------- #
+key = b'1234567890123456'
 
-    st.subheader("Enter Up To Three Links or Data")
+# ---------------- HEADER ---------------- #
+st.markdown("""
+<h1 style='text-align: center; color: white;'>RGB QR Code System</h1>
+<p style='text-align: center;'>Secure Compressed Encrypted QR</p>
+""", unsafe_allow_html=True)
 
-    red_link = st.text_input(
-        "🔴 Red Layer (Optional)",
-        value="",
-        placeholder="Enter link or text..."
+# ---------------- MODE SELECT ---------------- #
+mode = st.radio("Select Mode", ["Encode", "Decode"], horizontal=True)
+st.session_state.mode = mode
+st.sidebar.write("Current Mode:", st.session_state.mode)
+
+# ---------------- AES FUNCTIONS ---------------- #
+def encrypt_data(data, key):
+    cipher = AES.new(key, AES.MODE_CBC)
+    return cipher.iv + cipher.encrypt(pad(data, AES.block_size))
+
+def decrypt_data(enc_data, key):
+    iv = enc_data[:16]
+    ct = enc_data[16:]
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    return unpad(cipher.decrypt(ct), AES.block_size)
+
+# ---------------- QR GENERATION ---------------- #
+def generate_qr(data):
+    qr = qrcode.QRCode(
+        version=None,
+        box_size=10,  # increased for better readability
+        border=2
+    )
+    qr.add_data(data)
+    qr.make(fit=True)
+    return qr.make_image(fill_color="black", back_color="white")
+
+# ---------------- RGB FUNCTIONS ---------------- #
+def merge_rgb(r, g, b):
+    r, g, b = r.convert("L"), g.convert("L"), b.convert("L")
+
+    min_w = min(r.width, g.width, b.width)
+    min_h = min(r.height, g.height, b.height)
+
+    r, g, b = r.resize((min_w, min_h)), g.resize((min_w, min_h)), b.resize((min_w, min_h))
+
+    return Image.fromarray(np.stack([
+        np.array(r), np.array(g), np.array(b)
+    ], axis=2).astype('uint8'))
+
+def split_rgb(image):
+    img = np.array(image)
+    return (
+        Image.fromarray(img[:, :, 0]),
+        Image.fromarray(img[:, :, 1]),
+        Image.fromarray(img[:, :, 2])
     )
 
-    green_link = st.text_input(
-        "🟢 Green Layer (Optional)",
-        value="",
-        placeholder="Enter link or text..."
-    )
+# ---------------- ROBUST QR DECODER ---------------- #
+def decode_qr(img, detector):
+    img = np.array(img)
 
-    blue_link = st.text_input(
-        "🔵 Blue Layer (Optional)",
-        value="",
-        placeholder="Enter link or text..."
-    )
+    # ✅ Handle both grayscale and RGB safely
+    if len(img.shape) == 3:
+        gray = cv2.cvtColor(img, cv2.COLOR_RGB2GRAY)
+    else:
+        gray = img  # already grayscale
 
-    if st.button("Generate Combined RGB QR"):
-
-        if not red_link and not green_link and not blue_link:
-            st.warning("Please enter at least one link or data.")
-        else:
-            rgb_qr_image = generate_rgb_qr(
-                red_link,
-                green_link,
-                blue_link
-            )
-
-            # Centered QR Display
-            col1, col2, col3 = st.columns([1, 2, 1])
-            with col2:
-                st.image(
-                    rgb_qr_image,
-                    caption="Combined RGB QR",
-                    width=350
-                )
-
-            # Convert image to bytes
-            buffered = BytesIO()
-            rgb_qr_image.save(buffered, format="PNG")
-            img_bytes = buffered.getvalue()
-
-            # Download Button
-            st.download_button(
-                label="⬇ Download RGB_QR",
-                data=img_bytes,
-                file_name="rgb_qr.png",
-                mime="image/png"
-            )
-
-            # =====================================================
-            # SHARE FEATURE (LONG BASE64 IMAGE LINK)
-            # =====================================================
-
-            st.markdown("### 🔗 Share QR")
-
-            base64_img = base64.b64encode(img_bytes).decode()
-            share_link = f"data:image/png;base64,{base64_img}"
-
-            with st.expander("Click to view share link"):
-                st.text_area(
-                    "Copy this link:",
-                    value=share_link,
-                    height=150
-                )
-
-            st.success("RGB_QR Generated Successfully!")
-
-
-# =====================================================
-# SCAN QR MODE
-# =====================================================
-
-elif option == "Scan QR":
-
-    st.subheader("Scan RGB_QR")
-
-    scan_option = st.radio(
-        "Choose Scan Method:",
-        ["Upload Image", "Use Camera"]
-    )
-
-    image = None
-
-    # ---------------- Upload Image ----------------
-    if scan_option == "Upload Image":
-
-        uploaded_file = st.file_uploader(
-            "Upload RGB_QR Image",
-            type=["png", "jpg", "jpeg"]
+    # Try multiple preprocessing methods
+    methods = [
+        gray,
+        cv2.threshold(gray, 127, 255, cv2.THRESH_BINARY)[1],
+        cv2.adaptiveThreshold(
+            gray, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY, 11, 2
         )
+    ]
 
-        if uploaded_file:
-            image = Image.open(uploaded_file)
+    for m in methods:
+        data, _, _ = detector.detectAndDecode(m)
+        if data:
+            return data
 
-    # ---------------- Camera Scan ----------------
-    elif scan_option == "Use Camera":
+    return None
 
-        camera_image = st.camera_input("Take a picture of RGB_QR")
+# ---------------- ENCODE ---------------- #
+if st.session_state.mode == "Encode":
 
-        if camera_image:
-            image = Image.open(camera_image)
+    st.markdown("### Enter data to encode")
+    text = st.text_area("")
 
-    # ---------------- Decode Section ----------------
-    if image:
+    MAX_TOTAL = 2953 * 3
 
-        col1, col2, col3 = st.columns([1, 2, 1])
-        with col2:
-            st.image(
-                image,
-                caption="Scanned RGB_QR",
-                width=350
-            )
+    if text:
+        usage = min(len(text.encode()) / MAX_TOTAL, 1.0)
+        st.markdown(f"Capacity used: {int(usage * 100)}%")
+        st.progress(usage)
 
-        if st.button("Decode RGB_QR"):
-            red, green, blue = split_and_decode_rgb_qr(image)
+    if st.button("Generate QR", type="primary"):
+        if text:
+            try:
+                with st.spinner("Generating RGB QR..."):
 
-            st.success("Decoding Completed")
+                    compressed = zlib.compress(text.encode())
+                    encrypted = encrypt_data(compressed, key)
+                    b64 = base64.b64encode(encrypted).decode()
 
-            st.markdown("### 🔓 Recovered Data")
+                    part_size = (len(b64) + 2) // 3
 
-            st.write("🔴 Red Layer:", red if red else "Empty")
-            st.write("🟢 Green Layer:", green if green else "Empty")
-            st.write("🔵 Blue Layer:", blue if blue else "Empty")
+                    r_data = b64[:part_size]
+                    g_data = b64[part_size:2 * part_size]
+                    b_data = b64[2 * part_size:]
+
+                    qr_r = generate_qr(r_data)
+                    qr_g = generate_qr(g_data)
+                    qr_b = generate_qr(b_data)
+
+                    rgb_qr = merge_rgb(qr_r, qr_g, qr_b)
+
+                col1, col2 = st.columns([1,1])
+
+                with col1:
+                    st.image(rgb_qr, caption="RGB QR Code", width=260)
+
+                with col2:
+                    st.markdown("### Details")
+                    st.markdown(f"Original: {len(text)} chars")
+                    st.markdown(f"Compressed: {len(compressed)} bytes")
+                    st.markdown(f"Encrypted: {len(encrypted)} bytes")
+
+                buf = io.BytesIO()
+                rgb_qr.save(buf, format="PNG")
+
+                st.download_button(
+                    "Download RGB QR",
+                    buf.getvalue(),
+                    "rgb_qr.png",
+                    "image/png"
+                )
+
+                st.success("QR Generated Successfully")
+
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+# ---------------- DECODE ---------------- #
+elif st.session_state.mode == "Decode":
+
+    st.markdown("### Decode QR Code")
+
+    option = st.radio("Choose Input Method", ["Upload Image", "Use Camera"])
+
+    detector = cv2.QRCodeDetector()
+
+    if option == "Upload Image":
+        uploaded = st.file_uploader("Upload RGB QR", type=["png", "jpg"])
+
+        if uploaded:
+            image = Image.open(uploaded).convert("RGB")
+            st.image(image, caption="Uploaded Image", width=300)
+
+            r, g, b = split_rgb(image)
+
+            # Debug view
+            st.markdown("### Channel Debug")
+            c1, c2, c3 = st.columns(3)
+            c1.image(r, caption="R")
+            c2.image(g, caption="G")
+            c3.image(b, caption="B")
+
+            r_data = decode_qr(r, detector)
+            g_data = decode_qr(g, detector)
+            b_data = decode_qr(b, detector)
+
+            if not r_data or not g_data or not b_data:
+                failed = []
+                if not r_data: failed.append("R")
+                if not g_data: failed.append("G")
+                if not b_data: failed.append("B")
+                st.error(f"Failed channels: {', '.join(failed)}")
+            else:
+                try:
+                    full = r_data + g_data + b_data
+                    encrypted = base64.b64decode(full)
+                    decrypted = decrypt_data(encrypted, key)
+                    original = zlib.decompress(decrypted).decode()
+
+                    st.success("Decoded Data")
+                    st.text_area("Output", original, height=150)
+
+                except:
+                    st.error("Decoding failed")
+
+    elif option == "Use Camera":
+        img_file = st.camera_input("Scan QR")
+
+        if img_file:
+            image = Image.open(img_file).convert("RGB")
+            st.image(image, caption="Captured Image", width=300)
+
+            r, g, b = split_rgb(image)
+
+            r_data = decode_qr(r, detector)
+            g_data = decode_qr(g, detector)
+            b_data = decode_qr(b, detector)
+
+            if not r_data or not g_data or not b_data:
+                failed = []
+                if not r_data: failed.append("R")
+                if not g_data: failed.append("G")
+                if not b_data: failed.append("B")
+                st.warning(f"Try better lighting. Failed: {', '.join(failed)}")
+            else:
+                try:
+                    full = r_data + g_data + b_data
+                    encrypted = base64.b64decode(full)
+                    decrypted = decrypt_data(encrypted, key)
+                    original = zlib.decompress(decrypted).decode()
+
+                    st.success("Decoded Data")
+                    st.text_area("Output", original, height=150)
+
+                except:
+                    st.error("Decoding failed")
+
+# ---------------- FOOTER ---------------- #
+st.markdown("---")
+st.markdown("<p style='text-align: center;'>Streamlit RGB QR System</p>", unsafe_allow_html=True)
